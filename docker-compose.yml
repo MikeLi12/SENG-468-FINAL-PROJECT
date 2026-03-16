@@ -1,3 +1,37 @@
-# ============= POSTGRES USER LOGIN SERVER ==============
+services:
 
+  db:
+    image: postgres
+    restart: always
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      - ./secrets/userauth-pass:/run/secrets/userauth-pass:ro
+    environment:
+      DB_HOST: db
+      POSTGRES_DB: userauth
+      POSTGRES_USER: userauth
+      POSTGRES_PASSWORD_FILE: /run/secrets/userauth-pass
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U userauth"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
+  db_init:
+    build: ./app/user-auth
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./secrets/userauth-pass:/run/secrets/userauth-pass:ro
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=userauth
+      - DB_USER=userauth
+    restart: "no"
+
+volumes:
+  postgres_data:
