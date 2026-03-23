@@ -1,5 +1,4 @@
 services:
-
   db:
     image: postgres
     restart: always
@@ -32,13 +31,15 @@ services:
       MINIO_ROOT_USER: pdfstore
       MINIO_ROOT_PASSWORD_FILE: /run/secrets/pdfstore-pass
     command: server /var/lib/minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   db_init:
     build: ./app/user-auth
-    restart: "no"
-    depends_on:
-      db:
-        condition: service_healthy
+    restart: "no" 
     volumes:
       - ./secrets/userauth-pass:/run/secrets/userauth-pass:ro
     environment:
@@ -46,6 +47,24 @@ services:
       - DB_PORT=5432
       - DB_NAME=userauth
       - DB_USER=userauth
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build: ./app/api
+    restart: always
+    volumes:
+      - ./secrets/userauth-pass:/run/secrets/userauth-pass:ro
+      - ./secrets/pdfstore-pass:/run/secrets/pdfstore-pass:ro
+    ports:
+      - "5000:5000"
+    depends_on:
+      db:
+        condition: service_healthy
+      pdf_storage:
+        condition: service_healthy
+
 
 volumes:
   postgres_data:
