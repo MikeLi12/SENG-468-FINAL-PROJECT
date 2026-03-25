@@ -12,10 +12,10 @@ logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "document_chunks"
 
-_client: QdrantClient | None = None
+_client = None
 
 
-def get_qdrant() -> QdrantClient:
+def get_qdrant():
     global _client
     if _client is None:
         init_qdrant()
@@ -30,7 +30,6 @@ def init_qdrant():
         port=settings.QDRANT_PORT,
         timeout=30,
     )
-    # Create collection if it doesn't exist
     collections = _client.get_collections().collections
     collection_names = [c.name for c in collections]
 
@@ -42,13 +41,11 @@ def init_qdrant():
                 distance=Distance.COSINE,
             ),
         )
-        # Create payload index for filtering by user_id
         _client.create_payload_index(
             collection_name=COLLECTION_NAME,
             field_name="user_id",
             field_schema="keyword",
         )
-        # Create payload index for filtering by document_id
         _client.create_payload_index(
             collection_name=COLLECTION_NAME,
             field_name="document_id",
@@ -59,25 +56,20 @@ def init_qdrant():
         logger.info(f"Qdrant collection already exists: {COLLECTION_NAME}")
 
 
-def search_vectors(query_embedding: list[float], user_id: str, top_k: int = 5) -> list[dict]:
+def search_vectors(query_embedding, user_id, top_k=5):
     """Search for the top_k most similar vectors filtered by user_id."""
     client = get_qdrant()
-
     results = client.search(
         collection_name=COLLECTION_NAME,
         query_vector=query_embedding,
         query_filter=Filter(
             must=[
-                FieldCondition(
-                    key="user_id",
-                    match=MatchValue(value=user_id),
-                )
+                FieldCondition(key="user_id", match=MatchValue(value=user_id))
             ]
         ),
         limit=top_k,
         with_payload=True,
     )
-
     return [
         {
             "text": hit.payload.get("text", ""),
@@ -89,17 +81,14 @@ def search_vectors(query_embedding: list[float], user_id: str, top_k: int = 5) -
     ]
 
 
-def delete_document_vectors(document_id: str):
+def delete_document_vectors(document_id):
     """Delete all vectors associated with a document."""
     client = get_qdrant()
     client.delete(
         collection_name=COLLECTION_NAME,
         points_selector=Filter(
             must=[
-                FieldCondition(
-                    key="document_id",
-                    match=MatchValue(value=document_id),
-                )
+                FieldCondition(key="document_id", match=MatchValue(value=document_id))
             ]
         ),
     )
