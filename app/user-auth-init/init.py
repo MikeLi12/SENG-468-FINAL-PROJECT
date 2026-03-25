@@ -1,27 +1,7 @@
 import psycopg
 import time
 import sys
-
-DB_HOST = "db"
-DB_NAME = "userauth"
-DB_USER = "userauth"
-DB_PASSWORD = open("/run/secrets/userauth-pass").read().strip()
-
-def connect():
-    conn = None
-    for i in range(5):
-        try:
-            print("attempting connection...")
-            conn = psycopg.connect(
-                    host=DB_HOST,
-                    dbname=DB_NAME, 
-                    user=DB_USER, 
-                    password=DB_PASSWORD)
-            time.sleep(5)
-        except Exception as e:
-            print("could not connect to db:")
-            print(e)
-    return conn
+from db.conn import PostgresConnection
 
 def table_exists(cur):
     cur.execute("""
@@ -40,13 +20,13 @@ def create_table(cur):
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         username VARCHAR(50) UNIQUE NOT NULL,
         password_hash VARCHAR(255) NOT NULL,
-        email VARCHAR(100) UNIQUE NOT NULL,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     )
     """)
 
 def init():  
-    conn = connect()
+    db = PostgresConnection()
+    conn = db.connect(retries=5, delay=5)
     cur = conn.cursor()
     if table_exists(cur):
         print("user table found, skipping table creation")
@@ -55,6 +35,9 @@ def init():
         create_table(cur)
         conn.commit()
         print("table created")
+    
+    conn.close()
+    print("connection closed")
     
 
 if __name__ == "__main__":

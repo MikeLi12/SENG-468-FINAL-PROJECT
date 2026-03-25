@@ -38,7 +38,9 @@ services:
       retries: 5
 
   db_init:
-    build: ./app/user-auth
+    build: 
+      context: ./app
+      dockerfile: ./user-auth-init/dockerfile
     restart: "no" 
     volumes:
       - ./secrets/userauth-pass:/run/secrets/userauth-pass:ro
@@ -52,7 +54,9 @@ services:
         condition: service_healthy
 
   api:
-    build: ./app/api
+    build:
+      context: ./app
+      dockerfile: ./api/dockerfile
     restart: always
     volumes:
       - ./secrets/userauth-pass:/run/secrets/userauth-pass:ro
