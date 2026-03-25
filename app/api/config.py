@@ -8,19 +8,11 @@ load_dotenv()
 
 class Settings:
     # PostgreSQL
-<<<<<<< HEAD
-    POSTGRES_DB: str = "semantic_retrieval"
-    POSTGRES_USER: str = "userauth"
-    POSTGRES_PASSWORD: str = "userauth"
-    POSTGRES_HOST: str = "db"
-    POSTGRES_PORT: int = 5432
-=======
     POSTGRES_DB = os.getenv("POSTGRES_DB", "semantic_retrieval")
     POSTGRES_USER = os.getenv("POSTGRES_USER", "sruser")
     POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "changeme")
     POSTGRES_HOST = os.getenv("POSTGRES_HOST", "postgres")
     POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
->>>>>>> af77c01207854e9e46c37c29c47b6312ca495781
 
     # Redis
     REDIS_HOST = os.getenv("REDIS_HOST", "redis")
