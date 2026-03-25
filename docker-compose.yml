@@ -44,11 +44,6 @@ services:
     restart: "no" 
     volumes:
       - ./secrets/userauth-pass:/run/secrets/userauth-pass:ro
-    environment:
-      - DB_HOST=db
-      - DB_PORT=5432
-      - DB_NAME=userauth
-      - DB_USER=userauth
     depends_on:
       db:
         condition: service_healthy
@@ -61,6 +56,7 @@ services:
     volumes:
       - ./secrets/userauth-pass:/run/secrets/userauth-pass:ro
       - ./secrets/pdfstore-pass:/run/secrets/pdfstore-pass:ro
+      - ./secrets/jwt-key:/run/secrets/jwt-key:ro
     ports:
       - "5000:5000"
     depends_on:

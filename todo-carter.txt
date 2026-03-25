@@ -1,0 +1,12 @@
+env vars:
+ -redis
+ -rabbit
+ -worker (celery)
+ -minio
+ -sqldb
+ -jwt secret key
+ -vectordb
+
+set vars
+
+

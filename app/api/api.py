@@ -1,8 +1,9 @@
 import psycopg
 from werkzeug.security import generate_password_hash
 from db.conn import PostgresConnection
-from loginman import LoginManager
-from flask import Flask, render_template, request, jsonify, redirect, url_for
+from db.loginman import LoginManager
+from auth.jwtman import JWTManager
+from flask import Flask, render_template, request, jsonify, redirect, url_for, make_response
                 
 app = Flask(__name__)
 
@@ -20,16 +21,30 @@ def login():
         return "Bad request", 400
 
     conn, username, password = result
+
     try:
         login = LoginManager(conn)
         valid = login.validate_login(username, password)
 
         if not valid:
-            return "Invalid login", 409
-        return redirect(url_for("dashboard", user=username)), 201
+            return "Invalid login", 401
+
+        jwt_man = JWTManager()
+        token = jwt_man.create_token(username)
+
+        response = make_response(redirect(url_for("dashboard", user=username)))
+        response.set_cookie(
+            "token",
+            token,
+            httponly=True,
+            max_age= 60 * 60 * 24,
+            samesite="Lax",
+        )
+        return response
+
     finally:
-        print("connection closed")
         conn.close()
+        print("connection closed")
     
 
 @app.route("/register", methods=["GET","POST"])

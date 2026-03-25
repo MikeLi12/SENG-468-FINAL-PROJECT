@@ -1,5 +1,6 @@
 from db.conn import PostgresConnection
 from werkzeug.security import generate_password_hash, check_password_hash
+import time
 
 class LoginManager:
     def __init__(self, conn):
@@ -51,6 +52,7 @@ class LoginManager:
                 (usr, pswd_hash)
             )
             self.conn.commit()
+            time.sleep(5)
             return self.validate_login(usr, pswd)
 
         return False

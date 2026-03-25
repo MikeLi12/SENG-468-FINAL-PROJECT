@@ -7,9 +7,9 @@ from functools import lru_cache
 class Settings(BaseSettings):
     # PostgreSQL
     POSTGRES_DB: str = "semantic_retrieval"
-    POSTGRES_USER: str = "sruser"
-    POSTGRES_PASSWORD: str = "changeme"
-    POSTGRES_HOST: str = "postgres"
+    POSTGRES_USER: str = "userauth"
+    POSTGRES_PASSWORD: str = "userauth"
+    POSTGRES_HOST: str = "db"
     POSTGRES_PORT: int = 5432
 
     # Redis
