@@ -1,4 +1,4 @@
-Flask==3.0.0
-psycopg[binary]==3.3.3
-Werkzeug==3.0.1
-PyJWT==2.12.1
+Flask
+psycopg[binary]
+Werkzeug
+PyJWT

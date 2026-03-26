@@ -18,7 +18,7 @@ services:
       timeout: 5s
       retries: 5
       
-  pdf_storage:
+  pdf-storage:
     image: minio/minio:latest
     restart: always
     volumes:
@@ -28,8 +28,10 @@ services:
       - "9000:9000"
       - "9001:9001"
     environment:
+      MINIO_ENDPOINT: pdf-storage:9000
       MINIO_ROOT_USER: pdfstore
       MINIO_ROOT_PASSWORD_FILE: /run/secrets/pdfstore-pass
+      MINIO_BUCKET: user-pdfs
     command: server /var/lib/minio_data --console-address ":9001"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/ready"]
@@ -48,6 +50,22 @@ services:
       db:
         condition: service_healthy
 
+  pdf-stor-init:
+    build:
+      context: ./app
+      dockerfile: ./pdf-stor-init/dockerfile
+    restart: "no"
+    volumes:
+      - ./secrets/pdfstore-pass:/run/secrets/pdfstore-pass:ro
+    environment:
+      MINIO_ENDPOINT: pdf-storage:9000
+      MINIO_ROOT_USER: pdfstore
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/pdfstore-pass
+      MINIO_BUCKET: user-pdfs
+    depends_on:
+      pdf-storage:
+        condition: service_healthy
+
   api:
     build:
       context: ./app
@@ -62,7 +80,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      pdf_storage:
+      pdf-storage:
         condition: service_healthy
 
 
