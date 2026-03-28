@@ -15,7 +15,7 @@ class MinioInitializer:
         self.bucket_name = os.getenv("MINIO_BUCKET", "user-pdfs")
         self.secure = False
 
-    def get_client(self)
+    def get_client(self):
         print("connecting to MinIO db...")
         return Minio(
             self.endpoint,
