@@ -10,4 +10,4 @@ COPY . .
 
 EXPOSE 5000
 
-CMD ["python", "-u", "api/api.py"]
+CMD ["python", "-u", "api/main.py"]
