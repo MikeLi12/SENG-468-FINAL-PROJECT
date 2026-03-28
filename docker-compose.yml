@@ -1,4 +1,5 @@
 services:
+
   db:
     image: postgres
     restart: always
@@ -17,7 +18,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
-      
+
   pdf-storage:
     image: minio/minio:latest
     restart: always
@@ -39,11 +40,28 @@ services:
       timeout: 5s
       retries: 5
 
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    restart: always
+    ports:
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:v1.7.4
+    restart: always
+    volumes:
+      - qdrant_data:/qdrant/storage
+
   db_init:
-    build: 
+    build:
       context: ./app
       dockerfile: ./user-auth-init/dockerfile
-    restart: "no" 
+    restart: "no"
     volumes:
       - ./secrets/userauth-pass:/run/secrets/userauth-pass:ro
     depends_on:
@@ -77,13 +95,51 @@ services:
       - ./secrets/jwt-key:/run/secrets/jwt-key:ro
     ports:
       - "5000:5000"
+    environment:
+      MINIO_ENDPOINT: pdf-storage:9000
+      MINIO_ROOT_USER: pdfstore
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/pdfstore-pass
+      MINIO_BUCKET: user-pdfs
+      RABBITMQ_HOST: rabbitmq
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6333"
+      EMBEDDING_MODEL: all-MiniLM-L6-v2
     depends_on:
       db:
         condition: service_healthy
       pdf-storage:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
+  worker:
+    build:
+      context: ./app
+      dockerfile: ./worker/dockerfile
+    restart: always
+    volumes:
+      - ./secrets/userauth-pass:/run/secrets/userauth-pass:ro
+      - ./secrets/pdfstore-pass:/run/secrets/pdfstore-pass:ro
+    environment:
+      MINIO_ENDPOINT: pdf-storage:9000
+      MINIO_ROOT_USER: pdfstore
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/pdfstore-pass
+      MINIO_BUCKET: user-pdfs
+      RABBITMQ_HOST: rabbitmq
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6333"
+      EMBEDDING_MODEL: all-MiniLM-L6-v2
+      EMBEDDING_DIMENSION: "384"
+      WORKER_ID: worker1
+    depends_on:
+      db:
+        condition: service_healthy
+      pdf-storage:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
 volumes:
   postgres_data:
   minio_data:
+  qdrant_data:
