@@ -49,9 +49,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-# ─── Service connections ─────────────────────────────────────────
-
 def get_postgres():
     return psycopg.connect(
         host=DB_HOST, dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD
@@ -85,9 +82,6 @@ def get_qdrant_client():
             collection_name=COLLECTION_NAME, field_name="document_id", field_schema="keyword"
         )
     return client
-
-
-# ─── Task processor ──────────────────────────────────────────────
 
 def process_document(task):
     doc_id = task["document_id"]
@@ -180,9 +174,6 @@ def _update_status(pg, doc_id, status, page_count=None, chunk_count=None, error=
     )
     pg.commit()
     cur.close()
-
-
-# ─── RabbitMQ consumer ──────────────────────────────────────────
 
 def on_message(channel, method, properties, body):
     try:
