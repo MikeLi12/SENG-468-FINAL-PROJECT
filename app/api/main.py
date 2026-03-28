@@ -1,21 +1,20 @@
 """Flask API — Distributed Semantic Retrieval System."""
 
-
 from flask import Flask, request, jsonify
 from functools import wraps
+from datetime import datetime, timezone
 import uuid
-import hashlib
-import time
 import logging
 import io
 import os
-import pika
 import json
+import pika
 
-from db.conn import PostgresConnection
 from auth.loginman import LoginManager
 from auth.jwtman import JWTManager
+from db.conn import PostgresConnection
 from minio import Minio
+from minio.error import S3Error
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -24,7 +23,7 @@ logger = logging.getLogger(__name__)
 db = PostgresConnection()
 jwt_manager = JWTManager()
 
-# MinIO connection (reads secrets same way as your init.py)
+# MinIO connection
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "pdf-storage:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ROOT_USER", "pdfstore")
 MINIO_SECRET_KEY = open(
@@ -46,7 +45,6 @@ RABBITMQ_PASSWORD = os.getenv("RABBITMQ_PASSWORD", "guest")
 QUEUE_NAME = "pdf_processing"
 
 
-
 def get_db():
     conn = db.connect(retries=3, delay=2)
     if conn is None:
@@ -54,12 +52,13 @@ def get_db():
     return conn
 
 
-
 def publish_task(document_id, user_id, minio_key, filename):
     try:
         credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASSWORD)
         params = pika.ConnectionParameters(
-            host=RABBITMQ_HOST, credentials=credentials, heartbeat=600
+            host=RABBITMQ_HOST,
+            credentials=credentials,
+            heartbeat=600,
         )
         connection = pika.BlockingConnection(params)
         channel = connection.channel()
@@ -79,10 +78,10 @@ def publish_task(document_id, user_id, minio_key, filename):
             properties=pika.BasicProperties(delivery_mode=2),
         )
         connection.close()
-        logger.info(f"Published task for document {document_id}")
-    except Exception as e:
-        logger.warning(f"RabbitMQ publish failed: {e}")
+        logger.info("Published task for document %s", document_id)
 
+    except Exception as e:
+        logger.warning("RabbitMQ publish failed: %s", e)
 
 
 def login_required(f):
@@ -104,6 +103,51 @@ def login_required(f):
     return decorated
 
 
+def extract_document_info(object_name, last_modified=None):
+    """
+    Expected object key format:
+    <user_id>/<document_id>/<filename>
+    """
+    parts = object_name.split("/", 2)
+    if len(parts) != 3:
+        return None
+
+    user_id, document_id, filename = parts
+
+    upload_date = None
+    if last_modified is not None:
+        if isinstance(last_modified, datetime):
+            if last_modified.tzinfo is None:
+                last_modified = last_modified.replace(tzinfo=timezone.utc)
+            upload_date = last_modified.isoformat()
+
+    return {
+        "user_id": user_id,
+        "document_id": document_id,
+        "filename": filename,
+        "upload_date": upload_date,
+        # Since metadata is no longer stored in Postgres, keep these minimal
+        "status": "uploaded",
+        "page_count": None,
+    }
+
+
+def find_user_document_object(user_id, document_id):
+    """
+    Find a single object belonging to a given user/document_id.
+    Returns the full MinIO object key if found, else None.
+    """
+    prefix = f"{user_id}/{document_id}/"
+
+    for obj in minio_client.list_objects(
+        MINIO_BUCKET,
+        prefix=prefix,
+        recursive=True,
+    ):
+        return obj.object_name
+
+    return None
+
 
 @app.after_request
 def after_request(response):
@@ -121,7 +165,8 @@ def cors_preflight(path=""):
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "ok"}), 200
+
 
 @app.route("/auth/signup", methods=["POST"])
 def signup():
@@ -146,11 +191,14 @@ def signup():
             return jsonify({"error": "Username already exists"}), 409
 
         user_id = str(result[0])
-        logger.info(f"User created: {username} ({user_id})")
-        return jsonify({"message": "User created successfully", "user_id": user_id}), 200
+        logger.info("User created: %s (%s)", username, user_id)
+        return jsonify({
+            "message": "User created successfully",
+            "user_id": user_id,
+        }), 200
 
     except Exception as e:
-        logger.error(f"Signup error: {e}")
+        logger.error("Signup error: %s", e)
         return jsonify({"error": "Internal server error"}), 500
     finally:
         conn.close()
@@ -176,14 +224,15 @@ def login():
         user_id = str(result["user_id"])
         token = jwt_manager.create_token(user_id, username)
 
-        logger.info(f"User logged in: {username}")
+        logger.info("User logged in: %s", username)
         return jsonify({"token": token, "user_id": user_id}), 200
 
     except Exception as e:
-        logger.error(f"Login error: {e}")
+        logger.error("Login error: %s", e)
         return jsonify({"error": "Internal server error"}), 500
     finally:
         conn.close()
+
 
 @app.route("/documents", methods=["POST"])
 @login_required
@@ -194,17 +243,29 @@ def upload_document():
         return jsonify({"error": "No file provided"}), 400
 
     file = request.files["file"]
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
+    if not file.filename:
+        return jsonify({"error": "Missing filename"}), 400
+
+    if not file.filename.lower().endswith(".pdf"):
         return jsonify({"error": "Only PDF files are accepted"}), 400
 
+    # duplicate filename check per user
+    try:
+        if user_already_has_filename(user_id, file.filename):
+            return jsonify({
+                "error": "A document with this filename already exists"
+            }), 409
+    except Exception as e:
+        logger.error("Duplicate filename check failed: %s", e)
+        return jsonify({"error": "Internal server error"}), 500
+
     content = file.read()
-    if len(content) == 0:
+    if not content:
         return jsonify({"error": "Empty file"}), 400
 
-    doc_id = str(uuid.uuid4())
-    minio_key = f"{user_id}/{doc_id}/{file.filename}"
+    document_id = str(uuid.uuid4())
+    minio_key = f"{user_id}/{document_id}/{file.filename}"
 
-    # Upload to MinIO
     try:
         minio_client.put_object(
             bucket_name=MINIO_BUCKET,
@@ -214,34 +275,15 @@ def upload_document():
             content_type="application/pdf",
         )
     except Exception as e:
-        logger.error(f"MinIO upload failed: {e}")
+        logger.error("MinIO upload failed: %s", e)
         return jsonify({"error": "Failed to store file"}), 500
 
-    # Insert metadata into PostgreSQL
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """INSERT INTO documents (id, user_id, filename, minio_key, status, file_size_bytes)
-               VALUES (%s, %s, %s, %s, 'processing', %s)""",
-            (doc_id, user_id, file.filename, minio_key, len(content)),
-        )
-        conn.commit()
-        cur.close()
-    except Exception as e:
-        conn.rollback()
-        logger.error(f"DB error on upload: {e}")
-        return jsonify({"error": "Internal server error"}), 500
-    finally:
-        conn.close()
+    publish_task(document_id, user_id, minio_key, file.filename)
 
-    # Publish task to RabbitMQ
-    publish_task(doc_id, user_id, minio_key, file.filename)
-
-    logger.info(f"Document {doc_id} uploaded by user {user_id}")
+    logger.info("Document %s uploaded by user %s", document_id, user_id)
     return jsonify({
         "message": "PDF uploaded, processing started",
-        "document_id": doc_id,
+        "document_id": document_id,
         "status": "processing",
     }), 202
 
@@ -250,35 +292,41 @@ def upload_document():
 @login_required
 def list_documents():
     user_id = request.user_id
+    prefix = f"{user_id}/"
 
-    conn = get_db()
     try:
-        cur = conn.cursor()
-        cur.execute(
-            """SELECT id, filename, upload_date, status, page_count
-               FROM documents WHERE user_id = %s ORDER BY upload_date DESC""",
-            (user_id,),
-        )
-        rows = cur.fetchall()
-        cur.close()
+        documents = []
 
-        result = [
-            {
-                "document_id": str(row[0]),
-                "filename": row[1],
-                "upload_date": row[2].isoformat() if row[2] else None,
-                "status": row[3],
-                "page_count": row[4],
-            }
-            for row in rows
-        ]
-        return jsonify(result), 200
+        for obj in minio_client.list_objects(
+            MINIO_BUCKET,
+            prefix=prefix,
+            recursive=True,
+        ):
+            info = extract_document_info(
+                object_name=obj.object_name,
+                last_modified=obj.last_modified,
+            )
+            if info is None:
+                continue
+
+            documents.append({
+                "document_id": info["document_id"],
+                "filename": info["filename"],
+                "upload_date": info["upload_date"],
+                "status": info["status"],
+                "page_count": info["page_count"],
+            })
+
+        documents.sort(
+            key=lambda d: d["upload_date"] or "",
+            reverse=True,
+        )
+
+        return jsonify(documents), 200
 
     except Exception as e:
-        logger.error(f"List docs error: {e}")
+        logger.error("List docs error: %s", e)
         return jsonify({"error": "Internal server error"}), 500
-    finally:
-        conn.close()
 
 
 @app.route("/documents/<document_id>", methods=["DELETE"])
@@ -286,43 +334,25 @@ def list_documents():
 def delete_document(document_id):
     user_id = request.user_id
 
-    conn = get_db()
     try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT id, minio_key FROM documents WHERE id = %s AND user_id = %s",
-            (document_id, user_id),
-        )
-        row = cur.fetchone()
-        if not row:
-            cur.close()
-            return jsonify({"error": "Document not found or not owned by user"}), 404
+        object_name = find_user_document_object(user_id, document_id)
+        if object_name is None:
+            return jsonify({
+                "error": "Document not found or not owned by user"
+            }), 404
 
-        minio_key = row[1]
+        minio_client.remove_object(MINIO_BUCKET, object_name)
 
-        # Delete from MinIO
-        try:
-            minio_client.remove_object(MINIO_BUCKET, minio_key)
-        except Exception as e:
-            logger.warning(f"Failed to delete from MinIO: {e}")
-
-        # Delete from PostgreSQL
-        cur.execute("DELETE FROM documents WHERE id = %s", (document_id,))
-        conn.commit()
-        cur.close()
-
-        logger.info(f"Document {document_id} deleted by user {user_id}")
+        logger.info("Document %s deleted by user %s", document_id, user_id)
         return jsonify({
-            "message": "Document and all associated data deleted",
+            "message": "Document deleted successfully",
             "document_id": document_id,
         }), 200
 
     except Exception as e:
-        conn.rollback()
-        logger.error(f"Delete error: {e}")
+        logger.error("Delete error: %s", e)
         return jsonify({"error": "Internal server error"}), 500
-    finally:
-        conn.close()
+
 
 @app.route("/search", methods=["GET"])
 @login_required
@@ -333,7 +363,6 @@ def search_documents():
     if not query:
         return jsonify({"error": "Query parameter 'q' is required"}), 400
 
-    # Try vector search if Qdrant is available
     try:
         from qdrant_client import QdrantClient
         from qdrant_client.http.models import Filter, FieldCondition, MatchValue
@@ -368,22 +397,54 @@ def search_documents():
             for hit in results
         ]
 
-        logger.info(f"Search by user {user_id}: '{query}' -> {len(search_results)} results")
+        logger.info(
+            "Search by user %s: '%s' -> %s results",
+            user_id,
+            query,
+            len(search_results),
+        )
         return jsonify(search_results), 200
 
     except Exception as e:
-        logger.warning(f"Vector search not available: {e}")
-        # Fallback: return empty results (OK for checkpoint)
+        logger.warning("Vector search not available: %s", e)
         return jsonify([]), 200
+
+def get_filename_from_object_key(object_name):
+    """
+    Expected key format:
+    <user_id>/<document_id>/<filename>
+    """
+    parts = object_name.split("/", 2)
+    if len(parts) != 3:
+        return None
+    return parts[2]
+
+
+def user_already_has_filename(user_id, filename):
+    """
+    Return True if this user already has a document with the same filename.
+    """
+    prefix = f"{user_id}/"
+
+    for obj in minio_client.list_objects(
+        MINIO_BUCKET,
+        prefix=prefix,
+        recursive=True,
+    ):
+        existing_filename = get_filename_from_object_key(obj.object_name)
+        if existing_filename == filename:
+            return True
+
+    return False
 
 @app.errorhandler(404)
 def not_found(e):
     return jsonify({"error": "Not found"}), 404
 
+
 @app.errorhandler(500)
 def internal_error(e):
     return jsonify({"error": "Internal server error"}), 500
 
-
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(host="0.0.0.0", port=5000, debug=True)
