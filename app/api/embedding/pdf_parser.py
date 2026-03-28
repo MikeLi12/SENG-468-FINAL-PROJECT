@@ -1,7 +1,4 @@
 """PDF parsing and text chunking pipeline.
-
-Uses PyMuPDF (fitz) for robust PDF text extraction, then splits into
-paragraph-level chunks suitable for embedding and retrieval.
 """
 
 import fitz  # PyMuPDF
