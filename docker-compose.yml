@@ -94,7 +94,7 @@ services:
       - ./secrets/pdfstore-pass:/run/secrets/pdfstore-pass:ro
       - ./secrets/jwt-key:/run/secrets/jwt-key:ro
     ports:
-      - "8080:8080"
+      - "8080:5000"
     environment:
       MINIO_ENDPOINT: pdf-storage:9000
       MINIO_ROOT_USER: pdfstore
