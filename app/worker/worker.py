@@ -6,24 +6,24 @@ import uuid
 import time
 import logging
 import os
-import psycopg
+
 from minio import Minio
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import (
-    PointStruct, Distance, VectorParams,
-    Filter, FieldCondition, MatchValue,
+    PointStruct,
+    Distance,
+    VectorParams,
+    Filter, 
+    FieldCondition,
+    MatchValue, 
+    FilterSelector
 )
 
 from pdf_parser import extract_text_from_pdf, split_into_chunks
 from embeddings import generate_embeddings
 
-# ─── Config (reads secrets from files, same pattern as your other code) ──
+# ─── Config ──────────────────────────────────────────────────────
 WORKER_ID = os.getenv("WORKER_ID", "worker")
-
-DB_HOST = "db"
-DB_NAME = "userauth"
-DB_USER = "userauth"
-DB_PASSWORD = open("/run/secrets/userauth-pass").read().strip()
 
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "pdf-storage:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ROOT_USER", "pdfstore")
@@ -49,11 +49,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def get_postgres():
-    return psycopg.connect(
-        host=DB_HOST, dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD
-    )
-
 
 def get_minio_client():
     return Minio(
@@ -66,6 +61,7 @@ def get_minio_client():
 
 def get_qdrant_client():
     client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, timeout=60)
+
     collections = [c.name for c in client.get_collections().collections]
     if COLLECTION_NAME not in collections:
         client.create_collection(
@@ -76,12 +72,42 @@ def get_qdrant_client():
             ),
         )
         client.create_payload_index(
-            collection_name=COLLECTION_NAME, field_name="user_id", field_schema="keyword"
+            collection_name=COLLECTION_NAME,
+            field_name="user_id",
+            field_schema="keyword",
         )
         client.create_payload_index(
-            collection_name=COLLECTION_NAME, field_name="document_id", field_schema="keyword"
+            collection_name=COLLECTION_NAME,
+            field_name="document_id",
+            field_schema="keyword",
         )
+
     return client
+
+
+def delete_existing_document_chunks(qdrant, user_id, doc_id):
+    try:
+        qdrant.delete(
+            collection_name=COLLECTION_NAME,
+            points_selector=FilterSelector(
+                filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="user_id",
+                            match=MatchValue(value=user_id),
+                        ),
+                        FieldCondition(
+                            key="document_id",
+                            match=MatchValue(value=doc_id),
+                        ),
+                    ]
+                )
+            ),
+        )
+        logger.info(f"  Cleared existing Qdrant chunks for document {doc_id}")
+    except Exception as e:
+        logger.warning(f"  Could not clear old chunks for {doc_id}: {e}")
+
 
 def process_document(task):
     doc_id = task["document_id"]
@@ -92,88 +118,66 @@ def process_document(task):
     start_time = time.time()
     logger.info(f"Processing document {doc_id} ({filename})")
 
-    pg = get_postgres()
+    # 1. Download PDF from MinIO
+    minio_client = get_minio_client()
+    response = minio_client.get_object(MINIO_BUCKET, minio_key)
     try:
-        # 1. Download PDF from MinIO
-        minio_client = get_minio_client()
-        response = minio_client.get_object(MINIO_BUCKET, minio_key)
         pdf_bytes = response.read()
+    finally:
         response.close()
         response.release_conn()
-        logger.info(f"  Downloaded {len(pdf_bytes)} bytes from MinIO")
 
-        # 2. Extract text
-        full_text, page_count = extract_text_from_pdf(pdf_bytes)
-        if not full_text.strip():
-            _update_status(pg, doc_id, "error", page_count=page_count,
-                          error="No extractable text found in PDF")
-            return
+    logger.info(f"  Downloaded {len(pdf_bytes)} bytes from MinIO")
 
-        # 3. Split into chunks
-        chunks = split_into_chunks(full_text)
-        if not chunks:
-            _update_status(pg, doc_id, "error", page_count=page_count,
-                          error="No valid chunks after splitting")
-            return
+    # 2. Extract text
+    full_text, page_count = extract_text_from_pdf(pdf_bytes)
+    if not full_text.strip():
+        raise ValueError("No extractable text found in PDF")
 
-        logger.info(f"  {len(chunks)} chunks from {page_count} pages")
+    # 3. Split into chunks
+    chunks = split_into_chunks(full_text)
+    if not chunks:
+        raise ValueError("No valid chunks after splitting")
 
-        # 4. Generate embeddings
-        embeddings = generate_embeddings(chunks)
+    logger.info(f"  {len(chunks)} chunks from {page_count} pages")
 
-        # 5. Store in Qdrant
-        qdrant = get_qdrant_client()
-        points = [
-            PointStruct(
-                id=str(uuid.uuid4()),
-                vector=emb,
-                payload={
-                    "text": chunk,
-                    "document_id": doc_id,
-                    "user_id": user_id,
-                    "filename": filename,
-                    "chunk_index": i,
-                },
-            )
-            for i, (chunk, emb) in enumerate(zip(chunks, embeddings))
-        ]
+    # 4. Generate embeddings
+    embeddings = generate_embeddings(chunks)
 
-        batch_size = 100
-        for i in range(0, len(points), batch_size):
-            batch = points[i : i + batch_size]
-            qdrant.upsert(collection_name=COLLECTION_NAME, points=batch)
-            logger.info(f"  Upserted batch {i // batch_size + 1} ({len(batch)} points)")
+    # 5. Store in Qdrant
+    qdrant = get_qdrant_client()
 
-        # 6. Update status to ready
-        _update_status(pg, doc_id, "ready", page_count=page_count, chunk_count=len(chunks))
+    # Optional cleanup to avoid duplicate chunks on retries
+    delete_existing_document_chunks(qdrant, user_id, doc_id)
 
-        elapsed = time.time() - start_time
-        logger.info(f"  Document {doc_id} processed in {elapsed:.1f}s "
-                     f"({page_count} pages, {len(chunks)} chunks)")
+    points = [
+        PointStruct(
+            id=str(uuid.uuid4()),
+            vector=emb,
+            payload={
+                "text": chunk,
+                "document_id": doc_id,
+                "user_id": user_id,
+                "filename": filename,
+                "chunk_index": i,
+                "minio_key": minio_key,
+            },
+        )
+        for i, (chunk, emb) in enumerate(zip(chunks, embeddings))
+    ]
 
-    except Exception as e:
-        logger.error(f"  Error processing document {doc_id}: {e}", exc_info=True)
-        try:
-            _update_status(pg, doc_id, "error", error=str(e)[:500])
-        except Exception:
-            pass
-    finally:
-        pg.close()
+    batch_size = 100
+    for i in range(0, len(points), batch_size):
+        batch = points[i:i + batch_size]
+        qdrant.upsert(collection_name=COLLECTION_NAME, points=batch)
+        logger.info(f"  Upserted batch {i // batch_size + 1} ({len(batch)} points)")
 
-
-def _update_status(pg, doc_id, status, page_count=None, chunk_count=None, error=None):
-    cur = pg.cursor()
-    cur.execute(
-        """UPDATE documents
-           SET status = %s, page_count = COALESCE(%s, page_count),
-               chunk_count = COALESCE(%s, chunk_count),
-               error_message = %s,
-               processed_at = NOW()
-           WHERE id = %s""",
-        (status, page_count, chunk_count, error, doc_id),
+    elapsed = time.time() - start_time
+    logger.info(
+        f"  Document {doc_id} processed in {elapsed:.1f}s "
+        f"({page_count} pages, {len(chunks)} chunks)"
     )
-    pg.commit()
-    cur.close()
+
 
 def on_message(channel, method, properties, body):
     try:

@@ -55,7 +55,7 @@ services:
     image: qdrant/qdrant:v1.7.4
     restart: always
     volumes:
-      - qdrant_data:/qdrant/storage
+      - qdrant_data:/var/lib/qdrant
 
   db_init:
     build:
