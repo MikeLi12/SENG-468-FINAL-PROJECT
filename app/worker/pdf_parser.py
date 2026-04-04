@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 # ─── Chunking parameters ────────────────────────────────────────
 MIN_CHUNK_LENGTH = 50       # Characters – ignore very short chunks
-MAX_CHUNK_LENGTH = 1500     # Characters – split overly long chunks
+MAX_CHUNK_LENGTH = 500     # Characters – split overly long chunks
 OVERLAP_SENTENCES = 1       # Number of sentences to overlap between chunks
 
 
