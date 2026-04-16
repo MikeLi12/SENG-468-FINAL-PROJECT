@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+*.egg-info/
+
+# Env
+.env
+.env.local
+
+# PDFs / data — never commit user data (sample PDFs in tests/ are OK)
+*.pdf
+!tests/sample*.pdf
+
+# Load test results
+load_tests/results/
+
+# DBs / volumes
+*.db
+*.sqlite
+postgres_data/
+minio_data/
+qdrant_data/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Hugging Face cache
+.hf/
