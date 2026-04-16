@@ -1,5 +1,3 @@
-"""Flask API — Distributed Semantic Retrieval System."""
-
 from flask import Flask, request, jsonify
 from functools import wraps
 from datetime import datetime, timezone
@@ -13,8 +11,57 @@ import pika
 from auth.loginman import LoginManager
 from auth.jwtman import JWTManager
 from db.conn import PostgresConnection
+from psycopg_pool import ConnectionPool
 from minio import Minio
 from minio.error import S3Error
+
+# ── Loaded ONCE at module import (was previously per-request inside /search) ──
+from qdrant_client import QdrantClient
+from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+from sentence_transformers import SentenceTransformer
+import hashlib
+import redis as redis_lib
+
+_QDRANT_HOST  = os.getenv("QDRANT_HOST", "qdrant")
+_QDRANT_PORT  = int(os.getenv("QDRANT_PORT", "6333"))
+_MODEL_NAME   = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+_REDIS_HOST   = os.getenv("REDIS_HOST", "redis")
+_REDIS_PORT   = int(os.getenv("REDIS_PORT", "6379"))
+_CACHE_TTL    = int(os.getenv("CACHE_TTL", "300"))
+
+_embedding_model  = SentenceTransformer(_MODEL_NAME)
+_qdrant_singleton = QdrantClient(host=_QDRANT_HOST, port=_QDRANT_PORT, timeout=10)
+
+# Redis cache for query embeddings — degrades gracefully if Redis is down
+try:
+    _redis_cache = redis_lib.Redis(
+        host=_REDIS_HOST, port=_REDIS_PORT,
+        socket_timeout=2, socket_connect_timeout=2,
+        decode_responses=False,
+    )
+    _redis_cache.ping()
+except Exception:
+    _redis_cache = None
+
+
+def embed_query_cached(query):
+    """Return (vector, cache_hit_bool). Falls back to direct embedding if
+    Redis is unavailable."""
+    if _redis_cache is None:
+        return _embedding_model.encode(query, normalize_embeddings=True).tolist(), False
+    key = b"q:" + hashlib.sha256(query.encode("utf-8")).digest()
+    try:
+        cached = _redis_cache.get(key)
+        if cached is not None:
+            return json.loads(cached), True
+    except Exception:
+        pass
+    vec = _embedding_model.encode(query, normalize_embeddings=True).tolist()
+    try:
+        _redis_cache.setex(key, _CACHE_TTL, json.dumps(vec))
+    except Exception:
+        pass
+    return vec, False
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +69,17 @@ logger = logging.getLogger(__name__)
 
 db = PostgresConnection()
 jwt_manager = JWTManager()
+
+# Postgres connection pool (was: a fresh TCP connection per request)
+_pg_pool = ConnectionPool(
+    conninfo=(
+        f"host={db.host} dbname={db.dbname} "
+        f"user={db.user} password={db.password}"
+    ),
+    min_size=2,
+    max_size=10,
+    timeout=10,
+)
 
 # MinIO connection
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "pdf-storage:9000")
@@ -46,9 +104,11 @@ QUEUE_NAME = "pdf_processing"
 
 
 def get_db():
-    conn = db.connect(retries=3, delay=2)
+    """Check out a connection from the pool. Caller must return it via
+    _pg_pool.putconn(conn) when done."""
+    conn = _pg_pool.getconn(timeout=10)
     if conn is None:
-        raise Exception("Could not connect to database")
+        raise Exception("Could not obtain database connection from pool")
     return conn
 
 
@@ -103,6 +163,23 @@ def login_required(f):
     return decorated
 
 
+def get_document_status(user_id, document_id):
+    """Return ('ready', chunk_count) if Qdrant has chunks for this doc,
+    otherwise ('processing', 0). Used by GET /documents."""
+    try:
+        cnt = _qdrant_singleton.count(
+            collection_name="document_chunks",
+            count_filter=Filter(must=[
+                FieldCondition(key="user_id",     match=MatchValue(value=user_id)),
+                FieldCondition(key="document_id", match=MatchValue(value=document_id)),
+            ]),
+            exact=False,
+        ).count
+        return ("ready", cnt) if cnt > 0 else ("processing", 0)
+    except Exception:
+        return ("processing", 0)
+
+
 def extract_document_info(object_name, last_modified=None):
     """
     Expected object key format:
@@ -154,6 +231,7 @@ def after_request(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
+    response.headers["X-Served-By"] = os.getenv("INSTANCE_ID", "api")
     return response
 
 
@@ -201,7 +279,7 @@ def signup():
         logger.error("Signup error: %s", e)
         return jsonify({"error": "Internal server error"}), 500
     finally:
-        conn.close()
+        _pg_pool.putconn(conn)
 
 
 @app.route("/auth/login", methods=["POST"])
@@ -231,7 +309,7 @@ def login():
         logger.error("Login error: %s", e)
         return jsonify({"error": "Internal server error"}), 500
     finally:
-        conn.close()
+        _pg_pool.putconn(conn)
 
 
 @app.route("/documents", methods=["POST"])
@@ -309,12 +387,15 @@ def list_documents():
             if info is None:
                 continue
 
+            # Real status from Qdrant (was hardcoded "uploaded" before)
+            status, chunk_count = get_document_status(user_id, info["document_id"])
+
             documents.append({
                 "document_id": info["document_id"],
                 "filename": info["filename"],
                 "upload_date": info["upload_date"],
-                "status": info["status"],
-                "page_count": info["page_count"],
+                "status": status,
+                "page_count": chunk_count if status == "ready" else None,
             })
 
         documents.sort(
@@ -343,9 +424,25 @@ def delete_document(document_id):
 
         minio_client.remove_object(MINIO_BUCKET, object_name)
 
+        # Also remove all chunks for this document from Qdrant (spec: delete
+        # "removes file and all vector data")
+        try:
+            from qdrant_client.http.models import FilterSelector
+            _qdrant_singleton.delete(
+                collection_name="document_chunks",
+                points_selector=FilterSelector(
+                    filter=Filter(must=[
+                        FieldCondition(key="user_id",     match=MatchValue(value=user_id)),
+                        FieldCondition(key="document_id", match=MatchValue(value=document_id)),
+                    ])
+                ),
+            )
+        except Exception as e:
+            logger.warning("Qdrant cleanup failed for %s: %s", document_id, e)
+
         logger.info("Document %s deleted by user %s", document_id, user_id)
         return jsonify({
-            "message": "Document deleted successfully",
+            "message": "Document and all associated data deleted",
             "document_id": document_id,
         }), 200
 
@@ -364,20 +461,11 @@ def search_documents():
         return jsonify({"error": "Query parameter 'q' is required"}), 400
 
     try:
-        from qdrant_client import QdrantClient
-        from qdrant_client.http.models import Filter, FieldCondition, MatchValue
-        from sentence_transformers import SentenceTransformer
+        # Use the module-level singletons (huge perf fix — was loading 80MB
+        # model on every request before). Redis caches repeated query embeddings.
+        query_embedding, cache_hit = embed_query_cached(query)
 
-        qdrant_host = os.getenv("QDRANT_HOST", "qdrant")
-        qdrant_port = int(os.getenv("QDRANT_PORT", "6333"))
-        model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
-
-        model = SentenceTransformer(model_name)
-        query_embedding = model.encode(query, normalize_embeddings=True).tolist()
-
-        client = QdrantClient(host=qdrant_host, port=qdrant_port, timeout=10)
-
-        results = client.search(
+        results = _qdrant_singleton.search(
             collection_name="document_chunks",
             query_vector=query_embedding,
             query_filter=Filter(
@@ -398,10 +486,11 @@ def search_documents():
         ]
 
         logger.info(
-            "Search by user %s: '%s' -> %s results",
+            "Search by user %s: '%s' -> %s results (cache_hit=%s)",
             user_id,
             query,
             len(search_results),
+            cache_hit,
         )
         return jsonify(search_results), 200
 
