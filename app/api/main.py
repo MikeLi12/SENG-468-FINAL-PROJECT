@@ -1,3 +1,5 @@
+"""Flask API — Distributed Semantic Retrieval System."""
+
 from flask import Flask, request, jsonify
 from functools import wraps
 from datetime import datetime, timezone
@@ -71,15 +73,34 @@ db = PostgresConnection()
 jwt_manager = JWTManager()
 
 # Postgres connection pool (was: a fresh TCP connection per request)
+# open=False → pool connects lazily on first use, not at import time.
+# This avoids failures when Postgres isn't ready yet at module load.
 _pg_pool = ConnectionPool(
     conninfo=(
         f"host={db.host} dbname={db.dbname} "
         f"user={db.user} password={db.password}"
     ),
     min_size=2,
-    max_size=10,
-    timeout=10,
+    max_size=20,
+    timeout=30,
+    open=False,
 )
+
+def _open_pool():
+    """Try to open the pool; retry if Postgres isn't ready yet."""
+    import time
+    for attempt in range(10):
+        try:
+            _pg_pool.open(wait=True, timeout=5)
+            logger.info("Postgres connection pool opened.")
+            return
+        except Exception as e:
+            logger.warning("Pool open attempt %d/10 failed: %s", attempt + 1, e)
+            time.sleep(2)
+    logger.error("Could not open connection pool after 10 attempts — will try lazily.")
+    _pg_pool.open(wait=False)
+
+_open_pool()
 
 # MinIO connection
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "pdf-storage:9000")
@@ -105,11 +126,16 @@ QUEUE_NAME = "pdf_processing"
 
 def get_db():
     """Check out a connection from the pool. Caller must return it via
-    _pg_pool.putconn(conn) when done."""
-    conn = _pg_pool.getconn(timeout=10)
-    if conn is None:
-        raise Exception("Could not obtain database connection from pool")
-    return conn
+    putconn in a finally block."""
+    try:
+        conn = _pg_pool.getconn(timeout=30)
+        if conn is None:
+            raise Exception("Pool returned None")
+        return conn
+    except Exception as e:
+        # Fallback: direct connection if pool fails
+        logger.warning("Pool getconn failed (%s), falling back to direct connect", e)
+        return db.connect(retries=3, delay=2)
 
 
 def publish_task(document_id, user_id, minio_key, filename):
@@ -279,7 +305,10 @@ def signup():
         logger.error("Signup error: %s", e)
         return jsonify({"error": "Internal server error"}), 500
     finally:
-        _pg_pool.putconn(conn)
+        try:
+            _pg_pool.putconn(conn)
+        except Exception:
+            pass
 
 
 @app.route("/auth/login", methods=["POST"])
@@ -309,7 +338,10 @@ def login():
         logger.error("Login error: %s", e)
         return jsonify({"error": "Internal server error"}), 500
     finally:
-        _pg_pool.putconn(conn)
+        try:
+            _pg_pool.putconn(conn)
+        except Exception:
+            pass
 
 
 @app.route("/documents", methods=["POST"])
