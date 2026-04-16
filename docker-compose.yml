@@ -60,7 +60,7 @@ services:
   db_init:
     build:
       context: ./app
-      dockerfile: ./user-auth-init/dockerfile
+      dockerfile: ./auth/dockerfile
     restart: "no"
     volumes:
       - ./secrets/userauth-pass:/run/secrets/userauth-pass:ro

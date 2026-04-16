@@ -10,9 +10,9 @@ import os
 import json
 import pika
 
-from auth.loginman import LoginManager
-from auth.jwtman import JWTManager
-from db.conn import PostgresConnection
+from loginman import LoginManager
+from jwtman import JWTManager
+from conn import PostgresConnection
 from minio import Minio
 from minio.error import S3Error
 
