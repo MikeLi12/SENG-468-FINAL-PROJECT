@@ -558,6 +558,10 @@ def user_already_has_filename(user_id, filename):
 
     return False
 
+@app.before_request
+def log_request():
+    logger.info(f"[{INSTANCE_ID}] {request.method} {request.path}")
+
 @app.errorhandler(404)
 def not_found(e):
     return jsonify({"error": "Not found"}), 404
