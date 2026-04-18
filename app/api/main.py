@@ -30,6 +30,7 @@ _MODEL_NAME   = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 _REDIS_HOST   = os.getenv("REDIS_HOST", "redis")
 _REDIS_PORT   = int(os.getenv("REDIS_PORT", "6379"))
 _CACHE_TTL    = int(os.getenv("CACHE_TTL", "300"))
+_INSTANCE_ID = os.getenv("INSTANCE_ID", "unknown")
 
 _embedding_model  = SentenceTransformer(_MODEL_NAME)
 _qdrant_singleton = QdrantClient(host=_QDRANT_HOST, port=_QDRANT_PORT, timeout=10)
@@ -560,7 +561,7 @@ def user_already_has_filename(user_id, filename):
 
 @app.before_request
 def log_request():
-    logger.info(f"[{INSTANCE_ID}] {request.method} {request.path}")
+    logger.info(f"[{_INSTANCE_ID}] {request.method} {request.path}")
 
 @app.errorhandler(404)
 def not_found(e):

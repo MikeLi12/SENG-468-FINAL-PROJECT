@@ -3,9 +3,9 @@ FROM python:3.10-slim
 WORKDIR /app
 ENV PYTHONPATH=/app
 
-COPY user-auth-init/requirements.txt .
+COPY auth/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["python", "user-auth-init/init.py"]
+CMD ["python", "auth/init.py"]

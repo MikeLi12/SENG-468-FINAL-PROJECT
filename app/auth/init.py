@@ -1,7 +1,7 @@
 import psycopg
 import time
 import sys
-from conn import PostgresConnection
+from db.conn import PostgresConnection
 
 def table_exists(cur):
     cur.execute("""
