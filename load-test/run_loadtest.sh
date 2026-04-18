@@ -1,5 +1,4 @@
 
-
 set -e
 
 HOST="${HOST:-http://localhost:8080}"
@@ -120,6 +119,75 @@ if [ -z "$SAMPLE_PDF" ]; then
     exit 1
 fi
 log "Using sample PDF: $SAMPLE_PDF"
+
+# ================================================================
+# WARMUP PHASE (30 seconds)
+# ================================================================
+echo ""
+echo "============================================================"
+log "WARMUP: Priming caches, connections, and model (30 seconds)"
+echo "============================================================"
+
+# Create a warmup user
+signup_user "warmup_user" "warmup123"
+WARMUP_TOKEN=$(login_user "warmup_user" "warmup123")
+
+# Upload a PDF so the worker loads its model and Qdrant collection exists
+log "Uploading warmup PDF..."
+curl -s -o /dev/null -X POST "$HOST/documents" \
+     -H "Authorization: Bearer $WARMUP_TOKEN" \
+     -F "file=@$SAMPLE_PDF;filename=warmup_$(date +%s).pdf"
+
+log "Waiting 15s for worker to process warmup PDF..."
+sleep 15
+
+# Fire 20 search requests to warm up API model, Redis cache, Qdrant index
+log "Firing 20 warmup search requests..."
+for i in $(seq 1 20); do
+    curl -s -o /dev/null "$HOST/search?q=warmup+test+query+$i" \
+         -H "Authorization: Bearer $WARMUP_TOKEN" &
+done
+wait
+
+# Fire 10 more health checks to warm up Nginx + Gunicorn workers
+for i in $(seq 1 10); do
+    curl -s -o /dev/null "$HOST/health" &
+done
+wait
+
+log "Warmup complete. All caches and models are hot."
+echo ""
+sleep 2
+
+# ================================================================
+# BASELINE: Single-user sequential requests (no concurrency)
+# ================================================================
+echo ""
+echo "============================================================"
+log "BASELINE: Single-user sequential (20 requests, no concurrency)"
+echo "============================================================"
+
+BASELINE_RESULTS="$RESULTS_DIR/baseline_raw.csv"
+> "$BASELINE_RESULTS"
+
+log "Running 20 sequential search requests (single user, no parallelism)..."
+for i in $(seq 1 20); do
+    result=$(search_query "$WARMUP_TOKEN" "baseline test query")
+    echo "$result" >> "$BASELINE_RESULTS"
+done
+
+log "Running 10 sequential upload requests (single user, no parallelism)..."
+for i in $(seq 1 10); do
+    unique="baseline_${i}_$(date +%s%N).pdf"
+    result=$(upload_pdf "$WARMUP_TOKEN" "$SAMPLE_PDF" "$unique")
+    echo "$result" >> "$BASELINE_RESULTS"
+done
+
+log "Baseline complete."
+
+echo ""
+echo "  --- Baseline Results (single user, sequential) ---"
+calc_stats "Baseline" "$BASELINE_RESULTS"
 
 # ================================================================
 # SCENARIO 1: Concurrent Uploads (20 parallel users)

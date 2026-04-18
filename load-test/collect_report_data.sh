@@ -41,6 +41,17 @@ echo ""
 
 echo ""
 echo "============================================================"
+echo "SECTION C0: BASELINE TEST RESULTS (single user, sequential)"
+echo "============================================================"
+if [ -f "$RESULTS_DIR/baseline_raw.csv" ]; then
+    echo "Raw data (http_code,time_seconds):"
+    cat "$RESULTS_DIR/baseline_raw.csv"
+else
+    echo "NOT FOUND"
+fi
+
+echo ""
+echo "============================================================"
 echo "SECTION C: UPLOAD TEST RESULTS"
 echo "============================================================"
 if [ -f "$RESULTS_DIR/uploads_raw.csv" ]; then
