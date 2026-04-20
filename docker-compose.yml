@@ -63,7 +63,7 @@ services:
   db_init:
     build:
       context: ./app
-      dockerfile: ./user-auth-init/dockerfile
+      dockerfile: ./auth/dockerfile
     restart: "no"
     volumes:
       - ./secrets/userauth-pass:/run/secrets/userauth-pass:ro
@@ -74,7 +74,7 @@ services:
   pdf-stor-init:
     build:
       context: ./app
-      dockerfile: ./pdf-stor-init/dockerfile
+      dockerfile: ./pdf-stor/dockerfile
     restart: "no"
     volumes:
       - ./secrets/pdfstore-pass:/run/secrets/pdfstore-pass:ro
