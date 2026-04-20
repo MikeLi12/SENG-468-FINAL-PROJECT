@@ -63,7 +63,7 @@ services:
   db_init:
     build:
       context: ./app
-      dockerfile: ./auth/dockerfile
+      dockerfile: ./user-auth-init/dockerfile
     restart: "no"
     volumes:
       - ./secrets/userauth-pass:/run/secrets/userauth-pass:ro
@@ -74,7 +74,7 @@ services:
   pdf-stor-init:
     build:
       context: ./app
-      dockerfile: ./pdf-stor/dockerfile
+      dockerfile: ./pdf-stor-init/dockerfile
     restart: "no"
     volumes:
       - ./secrets/pdfstore-pass:/run/secrets/pdfstore-pass:ro
@@ -95,10 +95,8 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
-      api1:
-        condition: service_healthy
-      api2:
-        condition: service_healthy
+      - api1
+      - api2
 
   api1:
     build:
@@ -122,11 +120,6 @@ services:
       REDIS_PORT: "6379"
       CACHE_TTL: "300"
       EMBEDDING_MODEL: all-MiniLM-L6-v2
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:5000/ || exit 1"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
     depends_on:
       db:
         condition: service_healthy
@@ -157,11 +150,6 @@ services:
       REDIS_PORT: "6379"
       CACHE_TTL: "300"
       EMBEDDING_MODEL: all-MiniLM-L6-v2
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:5000/ || exit 1"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
     depends_on:
       db:
         condition: service_healthy
