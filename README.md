@@ -332,8 +332,7 @@ No hardcoded paths. No local filesystem dependencies. No cloud-specific platform
     │   └── loginman.py
     ├── db/
     │   └── conn.py
-    ├── user-auth-init/
-    └── pdf-stor-init/
+    └── pdf-stor
 ```
 
 ## Troubleshooting
