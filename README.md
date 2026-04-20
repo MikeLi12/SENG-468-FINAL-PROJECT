@@ -241,7 +241,7 @@ curl "http://localhost:8080/search?q=test" \
 CLI-based load testing suite (uses `curl` + bash background processes for concurrency, `python3` for stats).
 
 ```bash
-bash load_tests/run_loadtest.sh
+bash load-test/run_loadtest.sh
 ```
 
 Runs 5 different test scenarios with a 30-second warmup period before measurements begin.
@@ -257,7 +257,7 @@ Runs 5 different test scenarios with a 30-second warmup period before measuremen
 To collect all results for your report:
 
 ```bash
-bash load_tests/collect_report_data.sh | tee report_data.txt
+bash load-test/collect_report_data.sh | tee report_data.txt
 ```
 
 Run `run_loadtest.sh` first. This script gathers hardware specs, verifies load balancer health, and collects resulting metrics from all load test scenarios.
