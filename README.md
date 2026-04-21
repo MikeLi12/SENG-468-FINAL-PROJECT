@@ -210,7 +210,7 @@ done
 wait
 ```
 
-### 4. Smoke Test
+### 4. Smoke Test (paste everything)
 
 ```bash
 # signup
@@ -228,7 +228,7 @@ curl -X POST http://localhost:8080/documents \
   -H "Authorization: Bearer $TOKEN" \
   -F "file=@tests/sample1.pdf"
 
-# wait for upload & processing to complete
+# wait for upload & processing to complete/it usually dont take 100 but just to make sure 
 sleep 100
 
 # search!
