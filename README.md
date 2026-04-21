@@ -229,7 +229,7 @@ curl -X POST http://localhost:8080/documents \
   -F "file=@tests/sample1.pdf"
 
 # wait for upload & processing to complete
-sleep 30
+sleep 100
 
 # search!
 curl "http://localhost:8080/search?q=test" \
