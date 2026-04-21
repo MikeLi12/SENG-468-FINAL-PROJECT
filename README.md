@@ -363,3 +363,4 @@ docker compose logs -f          # follow logs for all services
 docker compose logs -f worker1  # just worker1 service logs
 docker stats                    # live resource usage for all containers
 ```
+**This was done with the help of AI**
